@@ -1,42 +1,40 @@
 # Content Planner
 
-Mixes sub-niches × formats × angles into video ideas. Ticks ("done") are saved in a database.
+Mixes sub-niches × formats × angles into video ideas. Each user signs up / logs in and has their own plan and ticks.
 
-- Backend: Express + Prisma (`server/index.js`, `prisma/schema.prisma`)
+- Backend: Express + Prisma (`server/`, `prisma/schema.prisma`)
 - Frontend: React + Vite (`web/`)
-- Database: SQLite file by default, set by `DATABASE_URL` in `.env`
+- Database: PostgreSQL, set by `DATABASE_URL` (any provider: Aiven, Supabase, Neon, local Docker)
 
-## Run
+Security: scrypt password hashes, random session tokens stored only as SHA-256 hashes, httpOnly + SameSite cookies (Secure when `NODE_ENV=production`), JSON-only API (blocks CSRF), login rate limiting, security headers.
+
+## Run locally
 
 ```sh
 npm install            # also generates the Prisma client
-npm run db:migrate     # create/update the database from prisma/migrations
-npm run dev            # API on :3001, app on http://localhost:5173
+cp .env.example .env
+npm run db:local       # starts Postgres in Docker
+npm run db:migrate     # create/update tables
+npm run dev            # http://localhost:5173
+npm test
 ```
 
-Production: `npm run build && npm run db:deploy && npm start` → app + API on `PORT` (default 3001).
+Changing the data model: edit `prisma/schema.prisma`, then `npx prisma migrate dev --name what-changed`, and commit the new folder in `prisma/migrations/`.
 
-Changing the data model: edit `prisma/schema.prisma`, then `npx prisma migrate dev --name what-changed`.
+## Environment variables
 
-## Moving to a hosted Postgres (Supabase, Neon, ...)
+| Name | Required | What |
+|---|---|---|
+| `DATABASE_URL` | yes | Postgres connection string |
+| `DATABASE_CA_CERT` | recommended in prod | Contents of the provider's CA cert (Aiven: `ca.pem`). Without it, TLS is encrypted but the server isn't verified |
+| `PORT` | no | Defaults to 3001 |
 
-The connection string alone isn't enough: Prisma needs the provider and adapter changed too, once.
+## Deploy (Aiven)
 
-1. `npm i @prisma/adapter-pg`
-2. `prisma/schema.prisma`: `provider = "postgresql"`
-3. `server/index.js`: replace the SQLite adapter with
-   `import { PrismaPg } from '@prisma/adapter-pg'` and `new PrismaPg({ connectionString: process.env.DATABASE_URL })`
-4. `.env`: `DATABASE_URL="postgresql://..."` (copy it from the provider's dashboard)
-5. Delete `prisma/migrations/` (those SQL files are SQLite-specific) and run `npm run db:migrate -- --name init`
+The `Dockerfile` builds the app and API into one container. On start it runs `prisma migrate deploy`, then serves on port 3001.
 
-Existing SQLite data isn't copied over automatically; export a CSV first if you need it.
-
-## Deploy
-
-Everything (React app + API) runs as one container: `docker build -t content-planner .`
-On start it runs `prisma migrate deploy`, then serves on `PORT`.
-
-- Runtime: any container host (Render, Railway, Fly.io, Koyeb, ...). Set env vars `DATABASE_URL` and optionally `PORT`.
-- Database: SQLite inside a container is wiped on every redeploy unless the host mounts a disk.
-  For real use, create an Aiven for PostgreSQL service, do the "Moving to a hosted Postgres" steps above,
-  and paste Aiven's Service URI as `DATABASE_URL` (it already includes `sslmode=require`).
+1. Aiven console → create a **PostgreSQL** service (free plan is enough).
+2. **Runtime → Deploy application** → GitHub repo, branch `main`, `./Dockerfile`, port **3001** (HTTP).
+3. Integrate the PostgreSQL service with the app, exposing the connection string as **`DATABASE_URL`**.
+4. Optional but recommended: add `DATABASE_CA_CERT` as a **secret** env var with the contents of the Postgres service's CA certificate.
+5. After pushing new commits: **Overview → Actions → Deploy latest commit** (Aiven doesn't auto-deploy).

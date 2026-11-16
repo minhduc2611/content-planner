@@ -2,13 +2,32 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// To move to Postgres (Supabase, Neon...), change "sqlite" to "postgresql" — see README
+// Any Postgres works (Aiven, Supabase, Neon, local Docker): just change DATABASE_URL
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+  plan         Plan?
+}
+
+model Session {
+  id        Int      @id @default(autoincrement())
+  tokenHash String   @unique // only a hash is stored, so a DB leak doesn't leak logins
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
 }
 
 model Plan {
   id      Int    @id @default(autoincrement())
+  userId  Int    @unique
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   niche   String
   // shortcut: lists stored as newline-separated text (same as the textareas); split into tables if items need their own fields
   subs    String

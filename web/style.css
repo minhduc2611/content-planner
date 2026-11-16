@@ -17,3 +17,5 @@
   th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
   tr.done td { opacity:.45; text-decoration:line-through; }
   .wrap { overflow-x:auto; }
+.auth { max-width:360px; margin:40px auto; }
+.auth input { margin-bottom:12px; }

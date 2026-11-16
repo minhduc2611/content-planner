@@ -2,25 +2,72 @@ import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { mix, lines, key } from './mix.js';
 
-const api = (path, body) =>
-  fetch('/api' + path, body && { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    .then(r => { if (!r.ok) throw new Error(`Save failed (${r.status})`); return r.json(); });
+const api = async (path, body, method = 'PUT') => {
+  const r = await fetch('/api' + path, body && { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(data.error || `Request failed (${r.status})`), { status: r.status });
+  return data;
+};
 
 const build = p => mix(p.niche.trim() || 'my niche', lines(p.subs), lines(p.formats), lines(p.angles));
 
-function App() {
+function Auth({ onAuthed }) {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async e => {
+    e.preventDefault();
+    setBusy(true);
+    try { onAuthed(await api('/' + mode, { email, password }, 'POST')); }
+    catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <form className="auth" onSubmit={submit}>
+      <h1>Content Planner</h1>
+      <h2>{mode === 'login' ? 'Log in' : 'Sign up'}</h2>
+      <label htmlFor="email">Email</label>
+      <input id="email" type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} />
+      <label htmlFor="password">Password <small>(at least 8 characters)</small></label>
+      <input id="password" type="password" minLength={8} required value={password} onChange={e => setPassword(e.target.value)}
+        autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
+      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      <div className="bar">
+        <button className="primary" disabled={busy}>{mode === 'login' ? 'Log in' : 'Create account'}</button>
+        <button type="button" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}>
+          {mode === 'login' ? 'No account? Sign up' : 'Have an account? Log in'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Root() {
+  const [user, setUser] = useState(undefined); // undefined = checking, null = logged out
+  useEffect(() => { api('/me').then(setUser).catch(() => setUser(null)); }, []);
+  if (user === undefined) return <p>Loading…</p>;
+  if (!user) return <Auth onAuthed={setUser} />;
+  return <App user={user} onLogout={() => api('/logout', {}, 'POST').finally(() => setUser(null))} onExpired={() => setUser(null)} />;
+}
+
+function App({ user, onLogout, onExpired }) {
   const [inputs, setInputs] = useState(null);
   const [combos, setCombos] = useState([]);
   const [done, setDone] = useState(new Set());
   const [filter, setFilter] = useState('');
   const [error, setError] = useState('');
+  const fail = e => (e.status === 401 ? onExpired() : setError(e.message));
 
   useEffect(() => {
     api('/plan').then(p => {
       setInputs({ niche: p.niche, subs: p.subs, formats: p.formats, angles: p.angles });
       setDone(new Set(p.done.map(key)));
       setCombos(build(p));
-    }).catch(e => setError(e.message));
+    }).catch(fail);
   }, []);
 
   if (error && !inputs) return <p>Could not load: {error}. Is the server running?</p>;
@@ -28,7 +75,7 @@ function App() {
 
   const mixNow = () => {
     setCombos(build(inputs));
-    api('/plan', inputs).then(() => setError('')).catch(e => setError(e.message));
+    api('/plan', inputs).then(() => setError('')).catch(fail);
   };
 
   const shuffle = () => {
@@ -43,7 +90,7 @@ function App() {
     setDone(next);
     api('/done', { sub: c.sub, format: c.format, angle: c.angle, done: checked })
       .then(() => setError(''))
-      .catch(e => { setError(e.message); setDone(done); }); // roll back the tick if it didn't save
+      .catch(e => { fail(e); setDone(done); }); // roll back the tick if it didn't save
   };
 
   const downloadCsv = () => {
@@ -67,7 +114,10 @@ function App() {
 
   return (
     <>
-      <h1>Content Planner</h1>
+      <div className="bar" style={{ justifyContent: 'space-between' }}>
+        <h1 style={{ margin: 0 }}>Content Planner</h1>
+        <span>{user.email} <button onClick={onLogout}>Log out</button></span>
+      </div>
       <div className="grid">
         <div>
           <label htmlFor="niche">Main niche</label>
@@ -108,4 +158,4 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<Root />);
