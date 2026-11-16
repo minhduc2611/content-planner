@@ -50,8 +50,8 @@ model Content {
   format    String
   angle     String
   done      Boolean  @default(false)
-  doc       String   @default("")
   updatedAt DateTime @default(now()) @updatedAt
+  notes     Note[]
 
   @@unique([projectId, sub, format, angle])
 }
@@ -68,4 +68,16 @@ model Guide {
   position    Int    @default(0)
 
   @@unique([kind, name])
+}
+
+// Many notes per idea; body is Tiptap's JSON document (rendered only through the editor, so stored HTML can't inject scripts)
+model Note {
+  id        Int      @id @default(autoincrement())
+  contentId Int
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([contentId])
 }

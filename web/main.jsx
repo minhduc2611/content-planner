@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
 import { createRoot } from 'react-dom/client';
 import { mix, lines, key } from './mix.js';
 
@@ -260,9 +262,9 @@ function Planner({ projectId, isAdmin, fail }) {
   const [info, setInfo] = useState(null); // library item being viewed
   const [inputs, setInputs] = useState(null);
   const [combos, setCombos] = useState([]);
-  const [contents, setContents] = useState({}); // key -> { done, hasDoc }
+  const [contents, setContents] = useState({}); // key -> { done, noteCount }
   const [filter, setFilter] = useState('');
-  const [open, setOpen] = useState(null); // idea being edited
+  const [open, setOpen] = useState(null); // idea whose notes drawer is open
   const [error, setError] = useState('');
   const base = '/projects/' + projectId;
   const failHere = e => (e.status === 401 ? fail(e) : setError(e.message));
@@ -343,7 +345,7 @@ function Planner({ projectId, isAdmin, fail }) {
       </div>
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
       {combos.length === 0 && <p>Add your niche and at least one sub-niche, format and angle, then click <b>Mix &amp; save</b>.</p>}
-      {combos.length > 0 && <p><small>Click an idea to write notes for it.</small></p>}
+      {combos.length > 0 && <p><small>Click an idea to open its notes.</small></p>}
 
       <div className="wrap"><table>
         <thead><tr><th>Done</th><th>#</th><th>Sub-niche</th><th>Format</th><th>Angle</th><th>Brief</th><th>Notes</th></tr></thead>
@@ -357,7 +359,7 @@ function Planner({ projectId, isAdmin, fail }) {
                 <td><button className="link" onClick={e => { e.stopPropagation(); showInfo('format', c.format); }}>{c.format}</button></td>
                 <td><button className="link" onClick={e => { e.stopPropagation(); showInfo('angle', c.angle); }}>{c.angle}</button></td>
                 <td><button className="link" onClick={e => { e.stopPropagation(); setOpen(c); }}>{c.brief}</button></td>
-                <td>{st.hasDoc ? '📝' : ''}</td>
+                <td>{st.noteCount ? `📝 ${st.noteCount}` : ''}</td>
               </tr>
             );
           })}
@@ -365,56 +367,137 @@ function Planner({ projectId, isAdmin, fail }) {
       </table></div>
 
       {info && <GuideModal guide={info} isAdmin={false} fail={fail} onClose={() => setInfo(null)} />}
-      {open && <DocEditor base={base} idea={open} fail={failHere} onSaved={hasDoc => patch(open, { hasDoc })} onClose={() => setOpen(null)} />}
+      {open && <NotesDrawer base={base} idea={open} fail={failHere} onCount={noteCount => patch(open, { noteCount })} onClose={() => setOpen(null)} />}
     </>
   );
 }
 
-function DocEditor({ base, idea, fail, onSaved, onClose }) {
-  const [doc, setDoc] = useState(null);
-  const [status, setStatus] = useState('');
-  const saved = useRef('');
-  const timer = useRef();
+// Plain-text preview of a Tiptap JSON doc, for the notes list
+const preview = body => {
+  const out = [];
+  const walk = n => { if (n.text) out.push(n.text); n.content?.forEach(walk); if (n.type !== 'text') out.push(' '); };
+  try { walk(JSON.parse(body)); } catch {}
+  return out.join('').replace(/\s+/g, ' ').trim().slice(0, 140) || 'Empty note';
+};
+const when = d => new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+function NotesDrawer({ base, idea, fail, onCount, onClose }) {
+  const [notes, setNotes] = useState(null);
+  const [activeId, setActiveId] = useState(null);
+  const [error, setError] = useState('');
+  const flush = useRef(null); // set by the open editor: saves pending changes
   const ideaKey = { sub: idea.sub, format: idea.format, angle: idea.angle };
+  const failHere = e => (e.status === 401 ? fail(e) : setError(e.message));
 
-  useEffect(() => {
-    api(`${base}/content?${new URLSearchParams(ideaKey)}`).then(c => { saved.current = c.doc; setDoc(c.doc); }).catch(fail);
-    return () => clearTimeout(timer.current);
-  }, []);
+  useEffect(() => { api(`${base}/notes?${new URLSearchParams(ideaKey)}`).then(setNotes).catch(failHere); }, []);
+  useEffect(() => { if (notes) onCount(notes.length); }, [notes?.length]);
 
-  const save = text => {
-    if (text === saved.current) return Promise.resolve();
-    setStatus('Saving…');
-    return api(base + '/content', { ...ideaKey, doc: text })
-      .then(() => { saved.current = text; setStatus('Saved'); onSaved(text.trim() !== ''); })
-      .catch(e => { setStatus('Not saved: ' + e.message); fail(e); throw e; });
+  // Leave the editor only after its last changes are saved; stay put if saving fails
+  const leaveEditor = then => (flush.current ? flush.current() : Promise.resolve()).then(() => { flush.current = null; then(); }, () => {});
+  const close = () => leaveEditor(onClose);
+
+  const create = () => api(base + '/notes', ideaKey, 'POST').then(n => { setNotes([n, ...notes]); setActiveId(n.id); setError(''); }).catch(failHere);
+  const remove = n => {
+    if (!confirm('Delete this note? This can\'t be undone.')) return;
+    api(`${base}/notes/${n.id}`, {}, 'DELETE').then(() => { flush.current = null; setNotes(notes.filter(x => x.id !== n.id)); setActiveId(null); }).catch(failHere);
   };
+  const save = (id, body) => api(`${base}/notes/${id}`, { body }).then(n => setNotes(list => list.map(x => (x.id === id ? n : x))));
 
-  const change = e => {
-    const text = e.target.value;
-    setDoc(text);
-    setStatus('Unsaved changes');
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => save(text).catch(() => {}), 800); // autosave after you stop typing
-  };
-
-  // Save before closing; stay open if the save fails so nothing is lost
-  const close = () => { clearTimeout(timer.current); save(doc ?? '').then(onClose, () => {}); };
+  const active = notes?.find(n => n.id === activeId);
 
   return (
-    <div className="overlay" onClick={close}>
-      <div className="editor" role="dialog" aria-modal="true" aria-labelledby="ed-title" onClick={e => e.stopPropagation()}
+    <div className="overlay drawer-overlay" onClick={close}>
+      <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="dr-title" onClick={e => e.stopPropagation()}
         onKeyDown={e => e.key === 'Escape' && close()}>
-        <div className="bar" style={{ justifyContent: 'space-between', marginTop: 0 }}>
-          <h2 id="ed-title" style={{ margin: 0, fontSize: 18 }}>{idea.brief}</h2>
-          <button onClick={close}>Close</button>
+        <div className="bar" style={{ justifyContent: 'space-between', marginTop: 0, alignItems: 'flex-start' }}>
+          <h2 id="dr-title" style={{ margin: 0, fontSize: 17 }}>{idea.brief}</h2>
+          <button onClick={close} autoFocus>Close</button>
         </div>
-        {doc === null ? <p>Loading…</p> : (
-          <textarea autoFocus value={doc} onChange={change} aria-label="Notes"
-            placeholder={'What do you want to say?\n\nHook:\n\nMain points:\n- \n\nCall to action:'} />
+        {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+        {!notes ? <p>Loading…</p> : active ? (
+          <>
+            <div className="bar" style={{ justifyContent: 'space-between' }}>
+              <button onClick={() => leaveEditor(() => setActiveId(null))}>← All notes</button>
+              <button onClick={() => remove(active)}>Delete note</button>
+            </div>
+            <NoteEditor key={active.id} note={active} flush={flush} save={body => save(active.id, body)} onError={failHere} />
+          </>
+        ) : (
+          <>
+            <button className="primary" onClick={create}>+ New note</button>
+            {notes.length === 0 && <p><small>No notes yet. Write down what you want to say in this video.</small></p>}
+            <ul className="notes">
+              {notes.map(n => (
+                <li key={n.id}>
+                  <button className="note-item" onClick={() => setActiveId(n.id)}>
+                    <span>{preview(n.body)}</span>
+                    <small>{when(n.updatedAt)}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
-        <small>{status}</small>
+      </aside>
+    </div>
+  );
+}
+
+function NoteEditor({ note, flush, save, onError }) {
+  const [status, setStatus] = useState('');
+  const timer = useRef();
+  const pending = useRef(false);
+
+  const doSave = ed => {
+    clearTimeout(timer.current);
+    if (!pending.current) return Promise.resolve();
+    setStatus('Saving…');
+    return save(JSON.stringify(ed.getJSON()))
+      .then(() => { pending.current = false; setStatus('Saved'); })
+      .catch(e => { setStatus('Not saved: ' + e.message); onError(e); throw e; });
+  };
+
+  const editor = useEditor({
+    extensions: [StarterKit],
+    content: JSON.parse(note.body),
+    autofocus: 'end',
+    shouldRerenderOnTransaction: true, // keeps toolbar active states in sync
+    onUpdate: ({ editor: ed }) => {
+      pending.current = true;
+      setStatus('Unsaved changes');
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => doSave(ed).catch(() => {}), 800); // autosave after you stop typing
+    },
+  });
+
+  useEffect(() => {
+    flush.current = () => (editor ? doSave(editor) : Promise.resolve());
+    return () => clearTimeout(timer.current);
+  }, [editor]);
+
+  if (!editor) return null;
+  const btn = (label, title, isActive, run) => (
+    <button type="button" title={title} aria-label={title} aria-pressed={isActive} className={isActive ? 'on' : ''}
+      onMouseDown={e => e.preventDefault()} onClick={run}>{label}</button>
+  );
+  const chain = () => editor.chain().focus();
+
+  return (
+    <div className="note-editor">
+      <div className="toolbar">
+        {btn('B', 'Bold', editor.isActive('bold'), () => chain().toggleBold().run())}
+        {btn('I', 'Italic', editor.isActive('italic'), () => chain().toggleItalic().run())}
+        {btn('S', 'Strikethrough', editor.isActive('strike'), () => chain().toggleStrike().run())}
+        {btn('H2', 'Heading', editor.isActive('heading', { level: 2 }), () => chain().toggleHeading({ level: 2 }).run())}
+        {btn('H3', 'Small heading', editor.isActive('heading', { level: 3 }), () => chain().toggleHeading({ level: 3 }).run())}
+        {btn('• List', 'Bullet list', editor.isActive('bulletList'), () => chain().toggleBulletList().run())}
+        {btn('1. List', 'Numbered list', editor.isActive('orderedList'), () => chain().toggleOrderedList().run())}
+        {btn('❝', 'Quote', editor.isActive('blockquote'), () => chain().toggleBlockquote().run())}
+        {btn('↶', 'Undo', false, () => chain().undo().run())}
+        {btn('↷', 'Redo', false, () => chain().redo().run())}
       </div>
+      <EditorContent editor={editor} className="tiptap-wrap" />
+      <small>{status}</small>
     </div>
   );
 }
