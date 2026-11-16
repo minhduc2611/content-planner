@@ -13,7 +13,7 @@ model User {
   passwordHash String
   createdAt    DateTime  @default(now())
   sessions     Session[]
-  plan         Plan?
+  projects     Project[]
 }
 
 model Session {
@@ -24,25 +24,33 @@ model Session {
   expiresAt DateTime
 }
 
-model Plan {
-  id      Int    @id @default(autoincrement())
-  userId  Int    @unique
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  niche   String
+model Project {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  niche     String
   // shortcut: lists stored as newline-separated text (same as the textareas); split into tables if items need their own fields
-  subs    String
-  formats String
-  angles  String
-  done    Done[]
+  subs      String
+  formats   String
+  angles    String
+  createdAt DateTime  @default(now())
+  contents  Content[]
+
+  @@index([userId])
 }
 
-model Done {
-  id     Int    @id @default(autoincrement())
-  planId Int
-  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
-  sub    String
-  format String
-  angle  String
+// One row per idea the user has touched (ticked or wrote notes for); keyed by text so editing inputs never loses them
+model Content {
+  id        Int      @id @default(autoincrement())
+  projectId Int
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sub       String
+  format    String
+  angle     String
+  done      Boolean  @default(false)
+  doc       String   @default("")
+  updatedAt DateTime @default(now()) @updatedAt
 
-  @@unique([planId, sub, format, angle])
+  @@unique([projectId, sub, format, angle])
 }

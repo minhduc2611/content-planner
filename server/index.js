@@ -31,7 +31,7 @@ app.use((req, res, next) => {
   if (PROD) res.set('Strict-Transport-Security', 'max-age=31536000');
   next();
 });
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '300kb' })); // room for 50k-char notes in any language
 
 // CSRF: browsers can't send a cross-site JSON request without CORS approval (never granted), and cookies are SameSite=Lax
 app.use('/api', (req, res, next) => {
@@ -102,31 +102,70 @@ app.post('/api/logout', requireUser, async (req, res) => {
 
 app.get('/api/me', requireUser, (req, res) => res.json({ email: req.user.email }));
 
-const getPlan = userId => prisma.plan.upsert({
-  where: { userId },
-  update: {},
-  create: { userId, ...DEFAULTS },
-  include: { done: { select: { sub: true, format: true, angle: true } } },
+const projectFields = b => {
+  const { name, niche, subs, formats, angles } = b ?? {};
+  return [niche, subs, formats, angles].every(v => str(v)) && str(name, 200) && name.trim()
+    ? { name: name.trim(), niche, subs, formats, angles } : null;
+};
+
+// Authorization: every project route loads the project by id AND owner, so other users' ids just 404
+async function ownProject(req, res, next) {
+  const id = Number(req.params.id);
+  const project = Number.isInteger(id) && await prisma.project.findFirst({ where: { id, userId: req.user.id } });
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  req.project = project;
+  next();
+}
+
+app.get('/api/projects', requireUser, async (req, res) => {
+  const where = { userId: req.user.id };
+  res.json(await prisma.project.findMany({ where, select: { id: true, name: true }, orderBy: { createdAt: 'asc' } }));
 });
 
-app.get('/api/plan', requireUser, async (req, res) => res.json(await getPlan(req.user.id)));
-
-app.put('/api/plan', requireUser, async (req, res) => {
-  const { niche, subs, formats, angles } = req.body ?? {};
-  if (![niche, subs, formats, angles].every(v => str(v))) return res.status(400).json({ error: 'niche, subs, formats, angles must be strings' });
-  await getPlan(req.user.id); // make sure it exists
-  await prisma.plan.update({ where: { userId: req.user.id }, data: { niche, subs, formats, angles } });
-  res.json(await getPlan(req.user.id));
+app.post('/api/projects', requireUser, async (req, res) => {
+  const name = req.body?.name;
+  if (!str(name, 200) || !name.trim()) return res.status(400).json({ error: 'Project needs a name' });
+  const p = await prisma.project.create({ data: { userId: req.user.id, name: name.trim(), ...DEFAULTS }, select: { id: true, name: true } });
+  res.json(p);
 });
 
-// Ticks are keyed by text, so editing inputs never deletes them
-app.put('/api/done', requireUser, async (req, res) => {
-  const { sub, format, angle, done } = req.body ?? {};
-  if (![sub, format, angle].every(v => str(v, 500)) || typeof done !== 'boolean') return res.status(400).json({ error: 'bad body' });
-  const plan = await getPlan(req.user.id);
-  const where = { planId: plan.id, sub, format, angle };
-  if (done) await prisma.done.upsert({ where: { planId_sub_format_angle: where }, update: {}, create: where });
-  else await prisma.done.deleteMany({ where });
+// Notes are left out of the list (could be long); hasDoc tells the UI which ideas have notes
+app.get('/api/projects/:id', requireUser, ownProject, async (req, res) => {
+  const contents = await prisma.content.findMany({ where: { projectId: req.project.id } });
+  res.json({ ...req.project, contents: contents.map(({ sub, format, angle, done, doc }) => ({ sub, format, angle, done, hasDoc: doc.trim() !== '' })) });
+});
+
+app.put('/api/projects/:id', requireUser, ownProject, async (req, res) => {
+  const data = projectFields(req.body);
+  if (!data) return res.status(400).json({ error: 'name, niche, subs, formats, angles must be text (name not empty)' });
+  res.json(await prisma.project.update({ where: { id: req.project.id }, data }));
+});
+
+app.delete('/api/projects/:id', requireUser, ownProject, async (req, res) => {
+  await prisma.project.delete({ where: { id: req.project.id } }); // cascades to its contents
+  res.json({ ok: true });
+});
+
+const contentKey = (req, src) => {
+  const { sub, format, angle } = src ?? {};
+  return [sub, format, angle].every(v => str(v, 500)) ? { projectId: req.project.id, sub, format, angle } : null;
+};
+
+app.get('/api/projects/:id/content', requireUser, ownProject, async (req, res) => {
+  const where = contentKey(req, req.query);
+  if (!where) return res.status(400).json({ error: 'sub, format, angle required' });
+  const c = await prisma.content.findUnique({ where: { projectId_sub_format_angle: where } });
+  res.json({ done: c?.done ?? false, doc: c?.doc ?? '' });
+});
+
+// Body may carry done, doc, or both; only the given fields change
+app.put('/api/projects/:id/content', requireUser, ownProject, async (req, res) => {
+  const where = contentKey(req, req.body);
+  const { done, doc } = req.body;
+  if (!where || (done !== undefined && typeof done !== 'boolean') || (doc !== undefined && !str(doc, 50000)) || (done === undefined && doc === undefined))
+    return res.status(400).json({ error: 'bad body' });
+  const data = { ...(done !== undefined && { done }), ...(doc !== undefined && { doc }) };
+  await prisma.content.upsert({ where: { projectId_sub_format_angle: where }, update: data, create: { ...where, ...data } });
   res.json({ ok: true });
 });
 
