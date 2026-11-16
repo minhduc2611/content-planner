@@ -40,8 +40,9 @@ app.use('/api', (req, res, next) => {
 });
 
 const DEFAULTS = {
-  niche: 'Building on socials',
-  subs: 'Product business optimisation\nProduct development with domain knowledge\nProduct optimisation\nMindset\nLife automation for productivity',
+  // niche and sub-niches are personal, so each user starts empty; formats/angles are generic starters
+  niche: '',
+  subs: '',
   formats: 'Back-and-forth talk\nTrend\nReaction\nTop list\nGreen screen\nVisual',
   angles: "Tutorial\nComparison\nMyths & common mistakes\nDo's & don'ts (right vs wrong)\nEducational\nTransformation\nChallenge",
 };

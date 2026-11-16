@@ -105,10 +105,10 @@ function App({ user, onLogout, onExpired }) {
   const q = filter.toLowerCase();
   const shown = combos.filter(c => !q || c.brief.toLowerCase().includes(q));
   const nDone = combos.filter(c => done.has(key(c))).length;
-  const field = (name, label) => (
+  const field = (name, label, placeholder) => (
     <div>
       <label htmlFor={name}>{label} <small>(one per line)</small></label>
-      <textarea id={name} value={inputs[name]} onChange={e => setInputs({ ...inputs, [name]: e.target.value })} />
+      <textarea id={name} placeholder={placeholder} value={inputs[name]} onChange={e => setInputs({ ...inputs, [name]: e.target.value })} />
     </div>
   );
 
@@ -121,11 +121,11 @@ function App({ user, onLogout, onExpired }) {
       <div className="grid">
         <div>
           <label htmlFor="niche">Main niche</label>
-          <input id="niche" value={inputs.niche} onChange={e => setInputs({ ...inputs, niche: e.target.value })} />
+          <input id="niche" placeholder="e.g. Building on socials" value={inputs.niche} onChange={e => setInputs({ ...inputs, niche: e.target.value })} />
         </div>
       </div>
       <div className="grid" style={{ marginTop: 12 }}>
-        {field('subs', 'Sub-niches')}
+        {field('subs', 'Sub-niches', 'e.g.\nMindset\nProduct optimisation\nLife automation')}
         {field('formats', 'Engaging formats')}
         {field('angles', 'Video angles')}
       </div>
@@ -139,6 +139,7 @@ function App({ user, onLogout, onExpired }) {
         <span id="count">{shown.length} of {combos.length} ideas · {nDone} done</span>
       </div>
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {combos.length === 0 && <p>Add your niche and at least one sub-niche, format and angle, then click <b>Mix them</b>.</p>}
 
       <div className="wrap"><table>
         <thead><tr><th>Done</th><th>#</th><th>Sub-niche</th><th>Format</th><th>Angle</th><th>Brief</th></tr></thead>
