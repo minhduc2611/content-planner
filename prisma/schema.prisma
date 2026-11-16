@@ -1,0 +1,29 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// To move to Postgres (Supabase, Neon...), change "sqlite" to "postgresql" — see README
+datasource db {
+  provider = "sqlite"
+}
+
+model Plan {
+  id      Int    @id @default(autoincrement())
+  niche   String
+  // shortcut: lists stored as newline-separated text (same as the textareas); split into tables if items need their own fields
+  subs    String
+  formats String
+  angles  String
+  done    Done[]
+}
+
+model Done {
+  id     Int    @id @default(autoincrement())
+  planId Int
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  sub    String
+  format String
+  angle  String
+
+  @@unique([planId, sub, format, angle])
+}

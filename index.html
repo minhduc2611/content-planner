@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Content Planner</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1a1a1a; --muted:#666; --card:#fff; --line:#ddd; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --muted:#999; --card:#1b1b1b; --line:#333; --accent:#60a5fa; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; font:15px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); max-width:1100px; margin-inline:auto; }
+  h1 { font-size:22px; margin:0 0 12px; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); }
+  label { display:block; font-weight:600; margin-bottom:4px; }
+  small { color:var(--muted); font-weight:400; }
+  input, textarea { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); font:inherit; }
+  textarea { height:170px; resize:vertical; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:12px 0; }
+  button { padding:8px 14px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); cursor:pointer; font:inherit; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .bar input { width:auto; flex:1; min-width:160px; }
+  #count { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; background:var(--card); }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr.done td { opacity:.45; text-decoration:line-through; }
+  .wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<h1>Content Planner</h1>
+
+<div class="grid">
+  <div>
+    <label for="niche">Main niche</label>
+    <input id="niche" value="Building on socials">
+  </div>
+</div>
+<div class="grid" style="margin-top:12px">
+  <div><label for="subs">Sub-niches <small>(one per line)</small></label>
+    <textarea id="subs">Product business optimisation
+Product development with domain knowledge
+Product optimisation
+Mindset
+Life automation for productivity</textarea></div>
+  <div><label for="formats">Engaging formats <small>(one per line)</small></label>
+    <textarea id="formats">Back-and-forth talk
+Trend
+Reaction
+Top list
+Green screen
+Visual</textarea></div>
+  <div><label for="angles">Video angles <small>(one per line)</small></label>
+    <textarea id="angles">Tutorial
+Comparison
+Myths & common mistakes
+Do's & don'ts (right vs wrong)
+Educational
+Transformation
+Challenge</textarea></div>
+</div>
+
+<div class="bar">
+  <button class="primary" id="gen">Mix them</button>
+  <button id="shuffle">Shuffle</button>
+  <button id="reset">Original order</button>
+  <button id="csv">Download CSV</button>
+  <input id="filter" placeholder="Filter…">
+  <span id="count"></span>
+</div>
+
+<div class="wrap"><table>
+  <thead><tr><th>Done</th><th>#</th><th>Sub-niche</th><th>Format</th><th>Angle</th><th>Brief</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const lines = id => [...new Set($(id).value.split('\n').map(s => s.trim()).filter(Boolean))];
+const FIELDS = ['niche', 'subs', 'formats', 'angles'];
+let combos = [];
+let done = {};
+
+// localStorage is a convenience only; page works without it
+const load = k => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+function mix(niche, subs, formats, angles) {
+  const out = [];
+  for (const s of subs) for (const f of formats) for (const a of angles)
+    out.push({ sub: s, format: f, angle: a, brief: `${f} video: ${a.toLowerCase()} on ${s} (${niche})` });
+  return out;
+}
+
+function generate() {
+  combos = mix($('niche').value.trim() || 'my niche', lines('subs'), lines('formats'), lines('angles'));
+  save('inputs-v2', Object.fromEntries(FIELDS.map(f => [f, $(f).value])));
+  render();
+}
+
+const key = c => c.sub + '|' + c.format + '|' + c.angle;
+const esc = s => s.replace(/[&<>"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[ch]));
+
+function render() {
+  const q = $('filter').value.toLowerCase();
+  const shown = combos.filter(c => !q || c.brief.toLowerCase().includes(q));
+  $('rows').innerHTML = shown.map((c, i) => {
+    const k = esc(key(c));
+    return `<tr class="${done[key(c)] ? 'done' : ''}"><td><input type="checkbox" aria-label="Mark done" data-k="${k}" ${done[key(c)] ? 'checked' : ''}></td>
+      <td>${i + 1}</td><td>${esc(c.sub)}</td><td>${esc(c.format)}</td><td>${esc(c.angle)}</td><td>${esc(c.brief)}</td></tr>`;
+  }).join('');
+  const nDone = combos.filter(c => done[key(c)]).length;
+  $('count').textContent = `${shown.length} of ${combos.length} ideas · ${nDone} done`;
+}
+
+$('rows').addEventListener('change', e => {
+  if (!e.target.dataset.k) return;
+  done[e.target.dataset.k] = e.target.checked;
+  save('done', done);
+  render();
+});
+$('gen').onclick = generate;
+$('reset').onclick = generate; // re-mixing rebuilds the list in input order
+$('filter').oninput = render;
+$('shuffle').onclick = () => {
+  for (let i = combos.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [combos[i], combos[j]] = [combos[j], combos[i]]; }
+  render();
+};
+$('csv').onclick = () => {
+  const cell = v => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = [['Sub-niche', 'Format', 'Angle', 'Brief', 'Done'], ...combos.map(c => [c.sub, c.format, c.angle, c.brief, done[key(c)] ? 'yes' : ''])]
+    .map(r => r.map(cell).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'content-ideas.csv';
+  a.click();
+};
+
+const saved = load('inputs-v2');
+if (saved) FIELDS.forEach(f => { if (saved[f] != null) $(f).value = saved[f]; });
+done = load('done') || {};
+generate();
+
+// self-check: 2 subs × 2 formats × 3 angles = 12 combos
+console.assert(mix('n', ['a','b'], ['x','y'], ['1','2','3']).length === 12, 'mix count wrong');
+</script>
+</body>
+</html>
