@@ -21,12 +21,20 @@ npm test
 
 Changing the data model: edit `prisma/schema.prisma`, then `npx prisma migrate dev --name what-changed`, and commit the new folder in `prisma/migrations/`.
 
+## Roles
+
+Every account is `user` by default. Admins can add/edit/delete the formats & angles library (description, steps, hooks, video examples); everyone can read it.
+
+- Make someone admin: add their email to `ADMIN_EMAILS` (works on Aiven), or run `npm run set-role -- someone@example.com admin`
+- Remove admin: take them out of `ADMIN_EMAILS` **and** run `npm run set-role -- someone@example.com user`
+
 ## Environment variables
 
 | Name | Required | What |
 |---|---|---|
 | `DATABASE_URL` | yes | Postgres connection string |
 | `DATABASE_CA_CERT` | recommended in prod | Contents of the provider's CA cert (Aiven: `ca.pem`). Without it, TLS is encrypted but the server isn't verified |
+| `ADMIN_EMAILS` | no | Comma-separated emails that become admin on sign-up/login |
 | `PORT` | no | Defaults to 3001 |
 
 ## Deploy (Aiven)

@@ -10,7 +10,8 @@
     "db:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "test": "node --test web/mix.test.js server/auth.test.js",
-    "db:local": "docker start content-planner-pg 2>/dev/null || docker run -d --name content-planner-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=content_planner -p 5432:5432 postgres:17"
+    "db:local": "docker start content-planner-pg 2>/dev/null || docker run -d --name content-planner-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=content_planner -p 5432:5432 postgres:17",
+    "set-role": "node server/set-role.js"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",

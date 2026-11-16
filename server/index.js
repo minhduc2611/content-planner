@@ -1,20 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { prisma } from './db.js';
 import { hashPassword, verifyPassword, DUMMY_HASH, newToken, hashToken, tooManyAttempts } from './auth.js';
-
-// node-postgres lets ?sslmode in the URL override our ssl settings, so we read it and pass TLS options ourselves
-const dbUrl = new URL(process.env.DATABASE_URL);
-const sslmode = dbUrl.searchParams.get('sslmode');
-dbUrl.searchParams.delete('sslmode');
-let ssl = false;
-if (process.env.DATABASE_CA_CERT) ssl = { ca: process.env.DATABASE_CA_CERT }; // encrypted + server identity verified
-else if (sslmode && sslmode !== 'disable') {
-  console.warn('DATABASE_CA_CERT not set: database traffic is encrypted but the server certificate is not verified');
-  ssl = { rejectUnauthorized: false };
-}
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: dbUrl.toString(), ssl }) });
 const app = express();
 const PROD = process.env.NODE_ENV === 'production';
 const SESSION_DAYS = 30;
@@ -39,13 +26,11 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-const DEFAULTS = {
-  // niche and sub-niches are personal, so each user starts empty; formats/angles are generic starters
-  niche: '',
-  subs: '',
-  formats: 'Back-and-forth talk\nTrend\nReaction\nTop list\nGreen screen\nVisual',
-  angles: "Tutorial\nComparison\nMyths & common mistakes\nDo's & don'ts (right vs wrong)\nEducational\nTransformation\nChallenge",
-};
+// Comma-separated emails that are always admin (works on hosts where you can't run scripts, e.g. Aiven Runtime)
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+const promoteIfListed = user => (ADMIN_EMAILS.includes(user.email) && user.role !== 'admin'
+  ? prisma.user.update({ where: { id: user.id }, data: { role: 'admin' } }) : user);
+const publicUser = u => ({ email: u.email, role: u.role });
 const str = (v, max = 10000) => typeof v === 'string' && v.length <= max;
 const cookieToken = req => (req.headers.cookie ?? '').split(/;\s*/).find(c => c.startsWith('sid='))?.slice(4);
 
@@ -79,9 +64,9 @@ app.post('/api/signup', async (req, res) => {
   const c = readCredentials(req, res);
   if (!c) return;
   if (await prisma.user.findUnique({ where: { email: c.email } })) return res.status(409).json({ error: 'That email is already registered' });
-  const user = await prisma.user.create({ data: { email: c.email, passwordHash: await hashPassword(c.password) } });
+  const user = await promoteIfListed(await prisma.user.create({ data: { email: c.email, passwordHash: await hashPassword(c.password) } }));
   await startSession(res, user.id);
-  res.json({ email: user.email });
+  res.json(publicUser(user));
 });
 
 app.post('/api/login', async (req, res) => {
@@ -91,7 +76,7 @@ app.post('/api/login', async (req, res) => {
   const ok = await verifyPassword(c.password, user?.passwordHash ?? DUMMY_HASH);
   if (!user || !ok) return res.status(401).json({ error: 'Wrong email or password' });
   await startSession(res, user.id);
-  res.json({ email: user.email });
+  res.json(publicUser(await promoteIfListed(user)));
 });
 
 app.post('/api/logout', requireUser, async (req, res) => {
@@ -100,7 +85,52 @@ app.post('/api/logout', requireUser, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/me', requireUser, (req, res) => res.json({ email: req.user.email }));
+app.get('/api/me', requireUser, (req, res) => res.json(publicUser(req.user)));
+
+// Role is read from the DB on every request (requireUser), so promoting/demoting takes effect immediately
+const requireAdmin = (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admins only' }));
+
+const GUIDE_KINDS = ['format', 'angle'];
+const guideFields = b => {
+  const { kind, name, description = '', steps = '', examples = '', hooks = '' } = b ?? {};
+  if (!GUIDE_KINDS.includes(kind) || !str(name, 200) || !name.trim()) return null;
+  if (![description, steps, examples, hooks].every(v => str(v, 20000))) return null;
+  // only http(s) links, so a stored "javascript:" link can't run in other users' browsers
+  const badLink = examples.split('\n').map(l => l.trim()).filter(Boolean).find(l => !/^https?:\/\//i.test(l));
+  if (badLink) return null;
+  return { kind, name: name.trim(), description, steps, examples, hooks };
+};
+const libraryNames = async kind => (await prisma.guide.findMany({ where: { kind }, orderBy: [{ position: 'asc' }, { id: 'asc' }], select: { name: true } }))
+  .map(g => g.name).join('\n');
+
+app.get('/api/guides', requireUser, async (req, res) =>
+  res.json(await prisma.guide.findMany({ orderBy: [{ kind: 'asc' }, { position: 'asc' }, { id: 'asc' }] })));
+
+app.post('/api/guides', requireUser, requireAdmin, async (req, res) => {
+  const data = guideFields(req.body);
+  if (!data) return res.status(400).json({ error: 'Needs kind, a name, and example links starting with http(s)://' });
+  if (await prisma.guide.findUnique({ where: { kind_name: { kind: data.kind, name: data.name } } })) return res.status(409).json({ error: 'That name already exists' });
+  const position = (await prisma.guide.count({ where: { kind: data.kind } }));
+  res.json(await prisma.guide.create({ data: { ...data, position } }));
+});
+
+// shortcut: projects store format/angle names, so renaming here doesn't rename them inside existing projects
+app.put('/api/guides/:id', requireUser, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const data = guideFields(req.body);
+  if (!Number.isInteger(id) || !data) return res.status(400).json({ error: 'Needs kind, a name, and example links starting with http(s)://' });
+  const clash = await prisma.guide.findUnique({ where: { kind_name: { kind: data.kind, name: data.name } } });
+  if (clash && clash.id !== id) return res.status(409).json({ error: 'That name already exists' });
+  const r = await prisma.guide.updateMany({ where: { id }, data });
+  if (!r.count) return res.status(404).json({ error: 'Not found' });
+  res.json(await prisma.guide.findUnique({ where: { id } }));
+});
+
+app.delete('/api/guides/:id', requireUser, requireAdmin, async (req, res) => {
+  const r = await prisma.guide.deleteMany({ where: { id: Number(req.params.id) || 0 } });
+  if (!r.count) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
 
 const projectFields = b => {
   const { name, niche, subs, formats, angles } = b ?? {};
@@ -125,7 +155,7 @@ app.get('/api/projects', requireUser, async (req, res) => {
 app.post('/api/projects', requireUser, async (req, res) => {
   const name = req.body?.name;
   if (!str(name, 200) || !name.trim()) return res.status(400).json({ error: 'Project needs a name' });
-  const p = await prisma.project.create({ data: { userId: req.user.id, name: name.trim(), ...DEFAULTS }, select: { id: true, name: true } });
+  const p = await prisma.project.create({ data: { userId: req.user.id, name: name.trim(), niche: '', subs: '', formats: await libraryNames('format'), angles: await libraryNames('angle') }, select: { id: true, name: true } });
   res.json(p);
 });
 

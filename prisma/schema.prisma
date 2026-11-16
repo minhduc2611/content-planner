@@ -11,6 +11,7 @@ model User {
   id           Int       @id @default(autoincrement())
   email        String    @unique
   passwordHash String
+  role         String    @default("user") // "user" | "admin"
   createdAt    DateTime  @default(now())
   sessions     Session[]
   projects     Project[]
@@ -53,4 +54,18 @@ model Content {
   updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([projectId, sub, format, angle])
+}
+
+// Shared library of formats and angles, curated by admins; projects reference them by name
+model Guide {
+  id          Int    @id @default(autoincrement())
+  kind        String // "format" | "angle"
+  name        String
+  description String @default("")
+  steps       String @default("") // one per line
+  examples    String @default("") // one video link per line
+  hooks       String @default("") // one per line
+  position    Int    @default(0)
+
+  @@unique([kind, name])
 }

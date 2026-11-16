@@ -54,7 +54,7 @@ function Root() {
   return <App user={user} onLogout={() => api('/logout', {}, 'POST').finally(() => setUser(null))} onExpired={() => setUser(null)} />;
 }
 
-// Hash routes (#/ and #/projects/:id) so Back/refresh work without a router or server changes
+// Hash routes (#/, #/library, #/projects/:id) so Back/refresh work without a router or server changes
 const useRoute = () => {
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
@@ -63,22 +63,153 @@ const useRoute = () => {
     return () => removeEventListener('hashchange', on);
   }, []);
   const m = hash.match(/^#\/projects\/(\d+)$/);
-  return m ? Number(m[1]) : null;
+  if (m) return { page: 'project', id: Number(m[1]) };
+  return { page: hash === '#/library' ? 'library' : 'projects' };
 };
 
 function App({ user, onLogout, onExpired }) {
-  const projectId = useRoute();
-
+  const route = useRoute();
+  const isAdmin = user.role === 'admin';
   return (
     <>
       <div className="bar" style={{ justifyContent: 'space-between' }}>
         <h1 style={{ margin: 0 }}><a href="#/" className="home">Content Planner</a></h1>
-        <span>{user.email} <button onClick={onLogout}>Log out</button></span>
+        <nav className="bar" style={{ margin: 0 }}>
+          <a href="#/">Projects</a>
+          <a href="#/library">Formats &amp; angles</a>
+          <span>{user.email}{isAdmin && <small> (admin)</small>}</span>
+          <button onClick={onLogout}>Log out</button>
+        </nav>
       </div>
-      {projectId
-        ? <Planner key={projectId} projectId={projectId} fail={e => (e.status === 401 ? onExpired() : null)} />
-        : <Projects onExpired={onExpired} />}
+      {route.page === 'project' && <Planner key={route.id} projectId={route.id} isAdmin={isAdmin} fail={e => (e.status === 401 ? onExpired() : null)} />}
+      {route.page === 'library' && <Library isAdmin={isAdmin} onExpired={onExpired} />}
+      {route.page === 'projects' && <Projects onExpired={onExpired} />}
     </>
+  );
+}
+
+const KIND_LABEL = { format: 'Engaging formats', angle: 'Video angles' };
+
+function useGuides(onError) {
+  const [guides, setGuides] = useState(null);
+  const load = () => api('/guides').then(setGuides).catch(onError);
+  useEffect(() => { load(); }, []);
+  return [guides, load];
+}
+
+function Library({ isAdmin, onExpired }) {
+  const [error, setError] = useState('');
+  const fail = e => (e.status === 401 ? onExpired() : setError(e.message));
+  const [guides, reload] = useGuides(fail);
+  const [open, setOpen] = useState(null);
+  if (!guides) return error ? <p role="alert" style={{ color: 'crimson' }}>{error}</p> : <p>Loading…</p>;
+
+  return (
+    <>
+      <h2>Formats &amp; angles</h2>
+      <p><small>{isAdmin ? 'You are an admin: click any item to edit it, or add new ones.' : 'Click any item to see how to use it. Admins curate this list.'}</small></p>
+      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      <div className="grid">
+        {Object.keys(KIND_LABEL).map(kind => (
+          <div key={kind}>
+            <h3>{KIND_LABEL[kind]}</h3>
+            <ul className="projects">
+              {guides.filter(g => g.kind === kind).map(g => (
+                <li key={g.id}><button className="link" onClick={() => setOpen(g)}>{g.name}</button></li>
+              ))}
+            </ul>
+            {isAdmin && <button onClick={() => setOpen({ kind, name: '', description: '', steps: '', examples: '', hooks: '' })}>+ Add {kind}</button>}
+          </div>
+        ))}
+      </div>
+      {open && <GuideModal guide={open} isAdmin={isAdmin} fail={fail} onChanged={reload} onClose={() => setOpen(null)} />}
+    </>
+  );
+}
+
+const listOf = text => (text ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+
+function GuideModal({ guide, isAdmin, fail, onChanged, onClose }) {
+  const isNew = !guide.id;
+  const [editing, setEditing] = useState(isNew);
+  const [form, setForm] = useState(guide);
+  const [error, setError] = useState('');
+  const set = k => e => setForm({ ...form, [k]: e.target.value });
+
+  const save = e => {
+    e.preventDefault();
+    const req = isNew ? api('/guides', form, 'POST') : api('/guides/' + guide.id, form);
+    req.then(() => { onChanged?.(); onClose(); }).catch(e => (e.status === 401 ? fail(e) : setError(e.message)));
+  };
+  const remove = () => {
+    if (!confirm(`Delete "${guide.name}" from the library? Projects that use it keep the name.`)) return;
+    api('/guides/' + guide.id, {}, 'DELETE').then(() => { onChanged?.(); onClose(); }).catch(e => (e.status === 401 ? fail(e) : setError(e.message)));
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="editor" role="dialog" aria-modal="true" aria-labelledby="g-title" onClick={e => e.stopPropagation()}
+        onKeyDown={e => e.key === 'Escape' && onClose()} style={{ overflowY: 'auto' }}>
+        <div className="bar" style={{ justifyContent: 'space-between', marginTop: 0 }}>
+          <h2 id="g-title" style={{ margin: 0, fontSize: 18 }}>
+            <small>{guide.kind === 'format' ? 'Format' : 'Angle'}</small><br />{isNew ? 'New ' + guide.kind : guide.name}
+          </h2>
+          <span>
+            {isAdmin && !editing && <button onClick={() => setEditing(true)}>Edit</button>}{' '}
+            <button onClick={onClose} autoFocus={!editing}>Close</button>
+          </span>
+        </div>
+
+        {!editing ? (
+          <div className="guide">
+            {guide.description ? <p>{guide.description}</p> : <p><small>No description yet.</small></p>}
+            {listOf(guide.steps).length > 0 && <><h3>Step by step</h3><ol>{listOf(guide.steps).map((s, i) => <li key={i}>{s}</li>)}</ol></>}
+            {listOf(guide.hooks).length > 0 && <><h3>Hooks</h3><ul>{listOf(guide.hooks).map((s, i) => <li key={i}>{s}</li>)}</ul></>}
+            {listOf(guide.examples).length > 0 && <><h3>Video examples</h3><ul>
+              {listOf(guide.examples).filter(u => /^https?:\/\//i.test(u)).map((u, i) => <li key={i}><a href={u} target="_blank" rel="noopener noreferrer">{u}</a></li>)}
+            </ul></>}
+          </div>
+        ) : (
+          <form onSubmit={save} className="guide-form">
+            <label htmlFor="g-name">Name</label>
+            <input id="g-name" required value={form.name} onChange={set('name')} autoFocus />
+            <label htmlFor="g-desc">Description</label>
+            <textarea id="g-desc" value={form.description} onChange={set('description')} style={{ height: 80 }} />
+            <label htmlFor="g-steps">Step by step <small>(one per line)</small></label>
+            <textarea id="g-steps" value={form.steps} onChange={set('steps')} />
+            <label htmlFor="g-hooks">Hooks <small>(one per line)</small></label>
+            <textarea id="g-hooks" value={form.hooks} onChange={set('hooks')} style={{ height: 100 }} />
+            <label htmlFor="g-ex">Video examples <small>(one link per line, starting with https://)</small></label>
+            <textarea id="g-ex" value={form.examples} onChange={set('examples')} style={{ height: 80 }} />
+            {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+            <div className="bar">
+              <button className="primary">Save</button>
+              {!isNew && <button type="button" onClick={remove}>Delete</button>}
+              <button type="button" onClick={() => (isNew ? onClose() : (setEditing(false), setForm(guide)))}>Cancel</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Checkbox list of library items; selected names not in the library (older projects) are kept and shown too
+function Picker({ kind, guides, value, onChange, onInfo }) {
+  const selected = lines(value);
+  const names = guides.filter(g => g.kind === kind).map(g => g.name);
+  const all = [...names, ...selected.filter(n => !names.includes(n))];
+  const toggle = (name, on) => onChange(all.filter(n => (n === name ? on : selected.includes(n))).join('\n'));
+  return (
+    <fieldset className="picker">
+      <legend>{KIND_LABEL[kind]}</legend>
+      {all.map(n => (
+        <div key={n} className="pick">
+          <label><input type="checkbox" checked={selected.includes(n)} onChange={e => toggle(n, e.target.checked)} /> {n}</label>
+          <button type="button" className="info" aria-label={`About ${n}`} onClick={() => onInfo(kind, n)}>ⓘ</button>
+        </div>
+      ))}
+    </fieldset>
   );
 }
 
@@ -124,7 +255,9 @@ function Projects({ onExpired }) {
   );
 }
 
-function Planner({ projectId, fail }) {
+function Planner({ projectId, isAdmin, fail }) {
+  const [guides] = useGuides(e => (e.status === 401 ? fail(e) : null));
+  const [info, setInfo] = useState(null); // library item being viewed
   const [inputs, setInputs] = useState(null);
   const [combos, setCombos] = useState([]);
   const [contents, setContents] = useState({}); // key -> { done, hasDoc }
@@ -142,7 +275,10 @@ function Planner({ projectId, fail }) {
     }).catch(failHere);
   }, []);
 
-  if (!inputs) return error ? <p role="alert" style={{ color: 'crimson' }}>{error} <a href="#/">Back to projects</a></p> : <p>Loading…</p>;
+  if (!inputs || !guides) return error ? <p role="alert" style={{ color: 'crimson' }}>{error} <a href="#/">Back to projects</a></p> : <p>Loading…</p>;
+
+  // Admins edit library items on the Library screen; here everyone just reads them
+  const showInfo = (kind, name) => setInfo(guides.find(g => g.kind === kind && g.name === name) ?? { id: -1, kind, name, description: 'This item is no longer in the library.' });
 
   const patch = (c, change) => setContents(prev => ({ ...prev, [key(c)]: { ...prev[key(c)], ...change } }));
 
@@ -193,8 +329,8 @@ function Planner({ projectId, fail }) {
       </div>
       <div className="grid" style={{ marginTop: 12 }}>
         {field('subs', 'Sub-niches', 'e.g.\nMindset\nProduct optimisation\nLife automation')}
-        {field('formats', 'Engaging formats')}
-        {field('angles', 'Video angles')}
+        <Picker kind="format" guides={guides} value={inputs.formats} onChange={v => setInputs({ ...inputs, formats: v })} onInfo={showInfo} />
+        <Picker kind="angle" guides={guides} value={inputs.angles} onChange={v => setInputs({ ...inputs, angles: v })} onInfo={showInfo} />
       </div>
 
       <div className="bar">
@@ -217,7 +353,9 @@ function Planner({ projectId, fail }) {
             return (
               <tr key={key(c)} className={`idea ${st.done ? 'done' : ''}`} onClick={() => setOpen(c)}>
                 <td onClick={e => e.stopPropagation()}><input type="checkbox" aria-label="Mark done" checked={!!st.done} onChange={e => toggle(c, e.target.checked)} /></td>
-                <td>{i + 1}</td><td>{c.sub}</td><td>{c.format}</td><td>{c.angle}</td>
+                <td>{i + 1}</td><td>{c.sub}</td>
+                <td><button className="link" onClick={e => { e.stopPropagation(); showInfo('format', c.format); }}>{c.format}</button></td>
+                <td><button className="link" onClick={e => { e.stopPropagation(); showInfo('angle', c.angle); }}>{c.angle}</button></td>
                 <td><button className="link" onClick={e => { e.stopPropagation(); setOpen(c); }}>{c.brief}</button></td>
                 <td>{st.hasDoc ? '📝' : ''}</td>
               </tr>
@@ -226,6 +364,7 @@ function Planner({ projectId, fail }) {
         </tbody>
       </table></div>
 
+      {info && <GuideModal guide={info} isAdmin={false} fail={fail} onClose={() => setInfo(null)} />}
       {open && <DocEditor base={base} idea={open} fail={failHere} onSaved={hasDoc => patch(open, { hasDoc })} onClose={() => setOpen(null)} />}
     </>
   );
