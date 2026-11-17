@@ -3,13 +3,8 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { createRoot } from 'react-dom/client';
 import { mix, lines, key } from './mix.js';
+import { api } from './api.js';
 
-const api = async (path, body, method = 'PUT') => {
-  const r = await fetch('/api' + path, body && { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(data.error || `Request failed (${r.status})`), { status: r.status });
-  return data;
-};
 
 const build = p => mix(p.niche.trim() || 'my niche', lines(p.subs), lines(p.formats), lines(p.angles));
 
